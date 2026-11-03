@@ -1,6 +1,6 @@
 {
   "name": "auto-effort",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Picks the effort level per model request from the stage skill, the plan step and the prompt; shows it in a band above the prompt with Auto and Manual buttons; asks TypeSafe's Jev when a TYPESAFE_API_KEY is set, else the word lists; logs misses for a hill climb.",
   "types": "./types/index.d.ts",
   "author": {

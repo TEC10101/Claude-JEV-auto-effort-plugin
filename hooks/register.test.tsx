@@ -1225,3 +1225,40 @@ test('what the store keeps is scrubbed, notes included; /effort-report clear for
   expect(await run('effort-jev', 'last')).toBe('effort: no Jev request yet this session.')
   expect(await run('effort-miss', 'low')).toBe('auto-effort: no finished turn to mark yet.')
 })
+
+test('Manual pressed after the turn opens but before its first request is this turn\'s: nothing has run yet', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on, { mode: 'rules' })
+  mock.env(on, {})
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  const efforts: (string | number | undefined)[] = []
+  on('turn.step', async function* (_, e) {
+    efforts.push(e.effort)
+    yield* []
+
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } } as never
+  })
+  on('tool.call', () => ({ result: 'ok' }))
+  const step = (index: number) => $.turn.step({ turnId: 't1', index, effort: 'xhigh', model: 'claude-fable-5', messageCount: 1 } as never)
+  const show = async () => (await $.command.run({ command: 'effort-show', args: '', origin: TYPED, presentation: SCREEN })).text
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  // A skill run as a slash command opens the turn; Manual is pressed before the model is first asked.
+  await $.turn.start({ text: '<command-message>improve-codebase-architecture</command-message>', turnId: 't1' })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'manual' })
+  await band.unmount()
+  expect(await show()).toBe('effort default · user override')
+  for await (const _ of step(0)) void _
+  expect(efforts).toEqual(['xhigh'])
+  // A plan step later in the turn does not take it back.
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'Write the log line', status: 'in_progress' }] } as never)
+  for await (const _ of step(1)) void _
+  expect(efforts).toEqual(['xhigh', 'xhigh'])
+  expect(await show()).toBe('effort xhigh · user override')
+  void clock
+})

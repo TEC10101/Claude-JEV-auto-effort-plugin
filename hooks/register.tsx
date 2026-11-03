@@ -175,14 +175,17 @@ async function setAuto($: EngineInterface): Promise<void> {
 
 /**
  * Manual or Auto from the band. While the band shows a turn's effort (the turn
- * running, or the last one between turns) the switch waits for the next turn
- * (`pending`): nothing is judged now, the turn runs on as it was, and the band
- * keeps its level marked `(last turn)`. Pressing back calls the switch off.
- * Before any turn, or in the first prompt's hold, it is at once.
+ * running, past its first model request, or the last one between turns) the
+ * switch waits for the next turn (`pending`): nothing is judged now, the turn
+ * runs on as it was, and the band keeps its level marked `(last turn)`.
+ * Pressing back calls the switch off. Before any turn, in the first prompt's
+ * hold, or in a turn not yet sent to the model (0.4.2: a slash command's turn
+ * opens a few seconds before its first request), it is at once.
  */
 async function switchTo($: EngineInterface, to: 'manual' | 'auto', reason: string): Promise<void> {
   const s = await read($, signals)
-  if ((running !== undefined || s.last !== undefined) && s.countdown === undefined) {
+  const turnRan = running !== undefined && running.steps > 0
+  if ((turnRan || (running === undefined && s.last !== undefined)) && s.countdown === undefined) {
     const already = to === 'manual' ? s.manual !== undefined : s.manual === undefined
     await update($, signals, x => (already ? without(x, 'pending') : { ...x, pending: { to, reason } }))
     return
