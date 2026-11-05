@@ -14,7 +14,7 @@
 import type { AutoEffortLevel, AutoEffortSignal } from '../types'
 
 /** The mod's version, as plugin.json says it (the zip step checks they agree). /effort-jev questions and /effort-mode print it. */
-export const VERSION = '0.4.2'
+export const VERSION = '0.4.4'
 
 // --- the stage: which skill the session is working through ------------------
 

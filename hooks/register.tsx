@@ -176,11 +176,13 @@ async function setAuto($: EngineInterface): Promise<void> {
 /**
  * Manual or Auto from the band. While the band shows a turn's effort (the turn
  * running, past its first model request, or the last one between turns) the
- * switch waits for the next turn (`pending`): nothing is judged now, the turn
- * runs on as it was, and the band keeps its level marked `(last turn)`.
- * Pressing back calls the switch off. Before any turn, in the first prompt's
- * hold, or in a turn not yet sent to the model (0.4.2: a slash command's turn
- * opens a few seconds before its first request), it is at once.
+ * switch waits for the next judgment (`pending`): a prompt, a plan step newly
+ * in progress, the wrap-up, a stage skill loaded (0.4.3; until then, the next
+ * prompt). Nothing is judged at the press, the requests in between run as they
+ * were, and the band keeps its level marked `(last turn)`. Pressing back calls
+ * the switch off. Before any turn, in the first prompt's hold, or in a turn not
+ * yet sent to the model (0.4.2: a slash command's turn opens a few seconds
+ * before its first request), it is at once.
  */
 async function switchTo($: EngineInterface, to: 'manual' | 'auto', reason: string): Promise<void> {
   const s = await read($, signals)
@@ -194,7 +196,7 @@ async function switchTo($: EngineInterface, to: 'manual' | 'auto', reason: strin
   await announce($)
 }
 
-/** The next turn opens: a switch pressed during the last one takes effect. */
+/** The next judgment: a switch pressed since the last one takes effect. */
 async function applyPending($: EngineInterface): Promise<void> {
   if (!(await read($, signals)).pending) return
   await update($, signals, s => {
@@ -729,6 +731,7 @@ export const register: Register = on => {
     const stage = e.agentId === undefined ? STAGE_BY_SKILL[e.skill] : undefined
     if (stage) {
       await update($, signals, s => ({ ...s, stage }))
+      await applyPending($)
       await announce($)
     }
 
@@ -774,6 +777,8 @@ export const register: Register = on => {
       }
       if (step) lastStep = { content: step.content, signal }
       await update($, signals, s => (signal ? { ...s, step: signal } : without(s, 'step')))
+      // A step newly in progress is the next judgment: a switch pressed since the last one takes effect here.
+      if (judged) await applyPending($)
       await announce($)
       if (judged) await whoosh($)
     }
@@ -782,7 +787,10 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'mcp__ccd_turn__wrap_up' }, async ($, e, next) => {
-    if (e.agentId === undefined) await update($, signals, s => ({ ...s, step: WRAP_UP }))
+    if (e.agentId === undefined) {
+      await update($, signals, s => ({ ...s, step: WRAP_UP }))
+      await applyPending($)
+    }
 
     return next(e)
   })
@@ -823,12 +831,20 @@ export const register: Register = on => {
         const model = e.model
         await update($, signals, x => ({ ...x, model }))
       }
-      if (e.index === 0 && e.effort !== undefined && s.engine !== e.effort) {
+      // The app's setting, read at every request (0.4.4; the first request only before): `e.effort` is the
+      // setting, never the mod's last pick, so the band names what Manual runs at once it moves mid-turn.
+      if (e.effort !== undefined && s.engine !== e.effort) {
         const engine = e.effort
-        // The app's setting changed since the last turn: that is the choice, Manual until Auto.
         const changed = s.engine !== undefined
-        await update($, signals, x => (changed ? { ...x, engine, manual: { reason: 'user override' } } : { ...x, engine }))
-        if (changed) await announce($)
+        if (e.index === 0) {
+          // Changed since the last turn: that is the choice, Manual until Auto, from this request.
+          await update($, signals, x => (changed ? { ...x, engine, manual: { reason: 'user override' } } : { ...x, engine }))
+          if (changed) await announce($)
+        } else {
+          // Changed mid-turn: the same choice, and like the Manual button it waits for the next judgment.
+          await update($, signals, x => ({ ...x, engine }))
+          if (changed) await switchTo($, 'manual', 'user override')
+        }
       }
       const now = await read($, signals)
       const d = decide(now)

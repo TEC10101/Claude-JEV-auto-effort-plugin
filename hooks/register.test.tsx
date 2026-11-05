@@ -312,6 +312,63 @@ test('Manual or Auto pressed mid-turn waits for the next turn: the band keeps wh
   expect(await show()).toMatch(/^effort low · [^(]*$/)
 })
 
+test('the app setting is read at every request: changed mid-turn, Manual waits for the next judgment, then the band shows the setting the requests run at', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on, { mode: 'rules' })
+  mock.env(on, {})
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('tool.call', () => ({ result: 'ok' }))
+  const efforts: (string | number | undefined)[] = []
+  on('turn.step', async function* (_, e) {
+    efforts.push(e.effort)
+    yield* []
+
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } } as never
+  })
+  let index = 0
+  const request = async (effort: 'max' | 'high' | 'medium') => {
+    for await (const _ of $.turn.step({ turnId: 't1', index: index++, effort, model: 'claude-opus-5-5', messageCount: 1 } as never)) void _
+    return efforts.at(-1)
+  }
+  const plan = (items: { content: string; status: string }[]) => $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items } as never)
+  const show = async () => (await $.command.run({ command: 'effort-show', args: '', origin: TYPED, presentation: SCREEN })).text
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  // Auto, the app at max: the rules pick, and the next request's unchanged setting is not mistaken for a change.
+  await first($, clock, 'Explain the Horde')
+  await $.turn.start({ text: 'Explain the Horde', turnId: 't1' })
+  expect(await request('max')).toBe('low')
+  expect(await request('max')).toBe('low')
+  const ranLow = await show()
+  expect(ranLow).toMatch(/^effort low · [^(]*$/)
+
+  // The app moves to high mid-turn: the choice is Manual, waiting for the next judgment like the button.
+  expect(await request('high')).toBe('low')
+  expect(await show()).toBe(`${ranLow} (last turn)`)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await band.find({ key: 'manual' }))?.props?.variant).toBe('primary')
+  await band.press({ key: 'manual' })
+  expect((await band.find({ key: 'manual' }))?.props?.variant).toBe('primary')
+  await band.unmount()
+
+  // The next judgment: Manual, and the band names the setting the requests now run at.
+  await plan([{ content: 'Read the spec', status: 'in_progress' }])
+  expect(await show()).toBe('effort high · user override')
+  expect(await request('high')).toBe('high')
+
+  // In Manual a mid-turn change runs at once, and the band follows it.
+  expect(await request('medium')).toBe('medium')
+  expect(await show()).toBe('effort medium · user override')
+  await $.turn.complete({ turnId: 't1', answer: 'done', durationMs: 1000, isAborted: false, reason: 'answer' })
+  expect(await show()).toBe('effort medium · user override (last turn)')
+  const report = await $.command.run({ command: 'effort-report', args: '', origin: TYPED, presentation: SCREEN })
+  expect(report.text).toContain('ran      low 3 · medium 1 · high 1 (requests, after the floor)')
+})
+
 test('in Auto a subagent runs at its type\'s level, else the main decision, whatever the Agent call said; in Manual it is left alone', async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on, { mode: 'rules' })
@@ -1261,4 +1318,70 @@ test('Manual pressed after the turn opens but before its first request is this t
   expect(efforts).toEqual(['xhigh', 'xhigh'])
   expect(await show()).toBe('effort xhigh · user override')
   void clock
+})
+
+test('a switch pressed mid-turn takes effect at the next judgment: a plan step newly in progress, the wrap-up, a stage skill', async ($, on) => {
+  mock.clock(on)
+  mock.store(on, { mode: 'rules' })
+  mock.env(on, {})
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('tool.call', () => ({ result: 'ok' }))
+  const efforts: (string | number | undefined)[] = []
+  on('turn.step', async function* (_, e) {
+    efforts.push(e.effort)
+    yield* []
+
+    return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } } as never
+  })
+  let index = 0
+  const request = async () => {
+    for await (const _ of $.turn.step({ turnId: 't1', index: index++, effort: 'xhigh', model: 'claude-opus-5-5', messageCount: 1 } as never)) void _
+    return efforts.at(-1)
+  }
+  const press = async (key: 'auto' | 'manual') => {
+    const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    await band.press({ key })
+    await band.unmount()
+  }
+  const plan = (items: { content: string; status: string }[]) => $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items } as never)
+  const show = async () => (await $.command.run({ command: 'effort-show', args: '', origin: TYPED, presentation: SCREEN })).text
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await press('manual')
+  await $.prompt.submit({ text: 'make a mock plan and walk it', wait: false, origin: TYPED })
+  await $.turn.start({ text: 'make a mock plan and walk it', turnId: 't1' })
+  await plan([{ content: 'Read the spec', status: 'in_progress' }, { content: 'Verify the stills', status: 'pending' }, { content: 'Write the log line', status: 'pending' }])
+  expect(await request()).toBe('xhigh')
+
+  // Auto pressed after a request: it waits, and the next request still runs the app's setting.
+  await press('auto')
+  expect(await show()).toBe('effort xhigh · user override (last turn)')
+  expect(await request()).toBe('xhigh')
+  // The next step is a judgment: Auto takes over there, and the step's level runs.
+  await plan([{ content: 'Read the spec', status: 'completed' }, { content: 'Verify the stills', status: 'in_progress' }, { content: 'Write the log line', status: 'pending' }])
+  expect(await show()).toBe('effort high · verifying step')
+  expect(await request()).toBe('high')
+
+  // Manual pressed mid-turn waits the same way, then takes the next step.
+  await press('manual')
+  expect(await request()).toBe('high')
+  await plan([{ content: 'Read the spec', status: 'completed' }, { content: 'Verify the stills', status: 'completed' }, { content: 'Write the log line', status: 'in_progress' }])
+  expect(await show()).toBe('effort xhigh · user override')
+  expect(await request()).toBe('xhigh')
+
+  // The wrap-up is a judgment too.
+  await press('auto')
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'done' } as never)
+  expect(await request()).toBe('low')
+
+  // So is a stage skill loaded.
+  await press('manual')
+  expect(await request()).toBe('low')
+  await $.tool.call({ tool: 'Skill', skill: 'review' } as never)
+  expect(await request()).toBe('xhigh')
+  expect(efforts).toEqual(['xhigh', 'xhigh', 'high', 'high', 'xhigh', 'low', 'low', 'xhigh'])
 })
